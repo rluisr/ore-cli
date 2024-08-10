@@ -60,9 +60,10 @@ impl Miner {
 
             // Calculate cutoff time
             let cutoff_time = self.get_cutoff(proof, args.buffer_time).await;
+            println!("cutoff time : {}", cutoff_time);
 
             // Run drillx
-            let solution =
+            let (solution, _best_difficulty) =
                 Self::find_hash_par(proof, cutoff_time, args.cores, config.min_difficulty as u32)
                     .await;
 
@@ -94,11 +95,19 @@ impl Miner {
         cutoff_time: u64,
         cores: u64,
         min_difficulty: u32,
-    ) -> Solution {
+    ) -> (Solution, u32) {
+        let my_difficulty = if min_difficulty < 19 && cutoff_time != 0 {
+            19
+        } else {
+            min_difficulty
+        };
+
         // Dispatch job to each thread
         let progress_bar = Arc::new(spinner::new_progress_bar());
-        let global_best_difficulty = Arc::new(RwLock::new(0u32));
         progress_bar.set_message("Mining...");
+
+        let global_best_difficulty = Arc::new(RwLock::new(0u32));
+
         let core_ids = core_affinity::get_core_ids().unwrap();
         let handles: Vec<_> = core_ids
             .into_iter()
@@ -123,6 +132,7 @@ impl Miner {
                         let mut best_nonce = nonce;
                         let mut best_difficulty = 0;
                         let mut best_hash = Hash::default();
+
                         loop {
                             // Create hash
                             if let Ok(hx) = drillx::hash_with_memory(
@@ -135,6 +145,12 @@ impl Miner {
                                     best_nonce = nonce;
                                     best_difficulty = difficulty;
                                     best_hash = hx;
+
+                                    if best_difficulty.gt(&*global_best_difficulty.read().unwrap())
+                                    {
+                                        *global_best_difficulty.write().unwrap() = best_difficulty;
+                                    }
+
                                     // {{ edit_1 }}
                                     if best_difficulty.gt(&*global_best_difficulty.read().unwrap())
                                     {
@@ -151,22 +167,20 @@ impl Miner {
                                 if timer.elapsed().as_secs().ge(&cutoff_time) {
                                     if i.id == 0 {
                                         progress_bar.set_message(format!(
-                                            "Mining... (difficulty {})",
-                                            global_best_difficulty,
+                                            "Mining... ({} / {} difficulty)",
+                                            global_best_difficulty, my_difficulty,
                                         ));
                                     }
-                                    if global_best_difficulty.ge(&min_difficulty) {
+                                    if global_best_difficulty.ge(&my_difficulty) {
                                         // Mine until min difficulty has been met
                                         break;
                                     }
                                 } else if i.id == 0 {
                                     progress_bar.set_message(format!(
-                                        "Mining... (difficulty {}, time {})",
+                                        "Mining... ({} / {} difficulty, {} sec remaining)",
                                         global_best_difficulty,
-                                        format_duration(
-                                            cutoff_time.saturating_sub(timer.elapsed().as_secs())
-                                                as u32
-                                        ),
+                                        my_difficulty,
+                                        cutoff_time.saturating_sub(timer.elapsed().as_secs()),
                                     ));
                                 }
                             }
@@ -203,7 +217,10 @@ impl Miner {
             best_difficulty
         ));
 
-        Solution::new(best_hash.d, best_nonce.to_le_bytes())
+        (
+            Solution::new(best_hash.d, best_nonce.to_le_bytes()),
+            best_difficulty,
+        )
     }
 
     pub fn check_num_cores(&self, cores: u64) {
@@ -262,10 +279,4 @@ impl Miner {
 
 fn calculate_multiplier(balance: u64, top_balance: u64) -> f64 {
     1.0 + (balance as f64 / top_balance as f64).min(1.0f64)
-}
-
-fn format_duration(seconds: u32) -> String {
-    let minutes = seconds / 60;
-    let remaining_seconds = seconds % 60;
-    format!("{:02}:{:02}", minutes, remaining_seconds)
 }
