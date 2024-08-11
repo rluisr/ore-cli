@@ -1,7 +1,6 @@
 use std::{io::Read, time::Duration};
 
 use cached::proc_macro::cached;
-use colored::*;
 use ore_api::{
     consts::{
         CONFIG_ADDRESS, MINT_ADDRESS, PROOF, TOKEN_DECIMALS, TOKEN_DECIMALS_V1, TREASURY_ADDRESS,
@@ -13,7 +12,6 @@ use serde::Deserialize;
 use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_program::{pubkey::Pubkey, sysvar};
-use solana_rpc_client::spinner;
 use solana_sdk::{clock::Clock, hash::Hash};
 use spl_associated_token_account::get_associated_token_address;
 use tokio::time::sleep;
@@ -104,45 +102,20 @@ pub fn ask_confirm(question: &str) -> bool {
 pub async fn get_latest_blockhash_with_retries(
     client: &RpcClient,
 ) -> Result<(Hash, u64), ClientError> {
-    let progress_bar = spinner::new_progress_bar();
     let mut attempts = 0;
 
     loop {
-        progress_bar.set_message(format!(
-            "Fetching latest blockhash... (attempt {})",
-            attempts + 1
-        ));
-
-        match client
+        if let Ok((hash, slot)) = client
             .get_latest_blockhash_with_commitment(client.commitment())
             .await
         {
-            Ok((hash, slot)) => {
-                progress_bar.finish_with_message(format!(
-                    "{}: Latest blockhash fetched",
-                    "OK".bold().green()
-                ));
-                return Ok((hash, slot));
-            }
-            Err(err) => {
-                progress_bar.set_message(format!(
-                    "{}: {}",
-                    "ERROR".bold().red(),
-                    err.kind().to_string(),
-                ));
-            }
+            return Ok((hash, slot));
         }
 
         // Retry
         sleep(Duration::from_millis(BLOCKHASH_QUERY_DELAY)).await;
         attempts += 1;
-
         if attempts >= BLOCKHASH_QUERY_RETRIES {
-            progress_bar.finish_with_message(format!(
-                "{}: Max retries reached for latest blockhash query",
-                "ERROR".bold().red()
-            ));
-
             return Err(ClientError {
                 request: None,
                 kind: ClientErrorKind::Custom(
